@@ -280,7 +280,7 @@ def _sql_session_last_active_by_id(session_id_expr: str) -> str:
         f"(SELECT started_at FROM sessions _act_s WHERE _act_s.id = {session_id_expr})")
 
 
-SCHEMA_VERSION = 31
+SCHEMA_VERSION = 32
 
 # Auto-maintenance VACUUMs only above this freelist fraction; below it a rewrite costs more I/O than it returns.
 # Auto-maintenance only VACUUMs when at least this fraction of the database file is reclaimable (``PRAGMA
@@ -770,6 +770,23 @@ BEGIN
         session_id = old.session_id AND display_identity = old.display_identity
         AND (active = 1 OR compacted = 1)
     );
+END;
+DROP TRIGGER IF EXISTS messages_display_identity_text_insert_guard;
+CREATE TRIGGER IF NOT EXISTS messages_display_identity_text_insert_guard
+AFTER INSERT ON messages WHEN typeof(new.display_identity) = 'text'
+BEGIN
+    -- display_identity is by contract BLOB-or-NULL: a 32-byte raw SHA-256 digest bound as bytes.
+    -- A writer that lands it as TEXT (observed in the wild: the raw invalid-UTF-8 digest bytes as
+    -- TEXT) crashes every Python reader with "Could not decode to UTF-8" and 500s the whole
+    -- session load. Normalize on write instead of failing reads; CAST keeps the same raw digest
+    -- bytes for the dedupe index.
+    UPDATE messages SET display_identity = CAST(new.display_identity AS BLOB) WHERE id = new.id;
+END;
+DROP TRIGGER IF EXISTS messages_display_identity_text_update_guard;
+CREATE TRIGGER IF NOT EXISTS messages_display_identity_text_update_guard
+AFTER UPDATE OF display_identity ON messages WHEN typeof(new.display_identity) = 'text'
+BEGIN
+    UPDATE messages SET display_identity = CAST(new.display_identity AS BLOB) WHERE id = new.id;
 END;
 DROP TRIGGER IF EXISTS messages_display_identity_delete;
 CREATE TRIGGER IF NOT EXISTS messages_display_identity_delete

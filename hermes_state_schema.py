@@ -1059,6 +1059,18 @@ class SessionSchemaMixin:
         if current_version < 25:
             # v25: de-duplicate system prompt snapshots (old column stays a read fallback).
             self._dedupe_legacy_system_prompts(cursor)
+        if current_version < 32:
+            # v32: re-type display_identity cells stored with TEXT storage class. The digest is
+            # written as bytes (BLOB), but a writer path observed in the wild landed the raw
+            # invalid-UTF-8 digest bytes as TEXT; every Python reader then dies with "Could not
+            # decode to UTF-8" fetching those rows and the messages API 500s the whole session.
+            # Probe first: the UPDATE takes the write lock even when it matches no rows. CAST
+            # preserves the raw digest bytes, so the dedupe index keeps working.
+            if cursor.execute("SELECT 1 FROM messages WHERE typeof(display_identity) = 'text' LIMIT 1").fetchone() is not None:
+                cursor.execute(
+                    "UPDATE messages SET display_identity = CAST(display_identity AS BLOB) "
+                    "WHERE typeof(display_identity) = 'text'"
+                )
         self._advance_message_uid_backfill(cursor)
         fts_migrations_complete = True
         if current_version < 30 and fts5_available:
